@@ -5,7 +5,20 @@ import {
 } from 'react-native';
 import { db, auth } from '../../firebaseConfig';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, User } from 'firebase/auth';
+import {
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  updateProfile,
+  User
+} from 'firebase/auth';
+import {
+  registerForPushNotifications,
+  notifyFamily,
+  scheduleOverdueReminders,
+  cancelOverdueReminders,
+} from '../../notifications';
+import { timeOfDayEmoji, formatTime, formatDuration } from '../../utils';
 
 // ─── CONFIG ────────────────────────────────────────────
 const DOG_NAME = "Balu";
@@ -55,18 +68,9 @@ function getStatus(lastWalkTime: number | null, isOut: boolean) {
   return STATUS.OVERDUE;
 }
 
-function formatTime(ts: number): string {
-  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-
-function formatDuration(ms: number): string {
-  const totalMin = Math.floor(ms / 60000);
-  if (totalMin < 60) return `${totalMin} min`;
-  return `${Math.floor(totalMin / 60)}h ${totalMin % 60}m`;
-}
-
 // ─── LOGIN SCREEN ───────────────────────────────────────
 function LoginScreen({ onLogin }: { onLogin: (u: User) => void }) {
+  const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isRegister, setIsRegister] = useState(false);
@@ -74,11 +78,13 @@ function LoginScreen({ onLogin }: { onLogin: (u: User) => void }) {
 
   async function handleSubmit() {
     if (!email || !password) return Alert.alert('Please enter email and password');
+    if (isRegister && !displayName) return Alert.alert('Please enter your name');
     setLoading(true);
     try {
       let result;
       if (isRegister) {
         result = await createUserWithEmailAndPassword(auth, email, password);
+        await updateProfile(result.user, { displayName });
       } else {
         result = await signInWithEmailAndPassword(auth, email, password);
       }
@@ -96,9 +102,20 @@ function LoginScreen({ onLogin }: { onLogin: (u: User) => void }) {
         <Text style={loginStyles.title}>DogWalk</Text>
         <Text style={loginStyles.subtitle}>{DOG_NAME}'s family app</Text>
 
+        {isRegister && (
+          <TextInput
+            style={loginStyles.input}
+            placeholder="Your name (e.g. Dad, Mom)"
+            placeholderTextColor="#999"
+            value={displayName}
+            onChangeText={setDisplayName}
+            autoCapitalize="words"
+          />
+        )}
         <TextInput
           style={loginStyles.input}
-          placeholder="Email"
+          placeholder="Email address"
+          placeholderTextColor="#999"
           value={email}
           onChangeText={setEmail}
           keyboardType="email-address"
@@ -107,6 +124,7 @@ function LoginScreen({ onLogin }: { onLogin: (u: User) => void }) {
         <TextInput
           style={loginStyles.input}
           placeholder="Password"
+          placeholderTextColor="#999"
           value={password}
           onChangeText={setPassword}
           secureTextEntry
@@ -116,7 +134,9 @@ function LoginScreen({ onLogin }: { onLogin: (u: User) => void }) {
           <ActivityIndicator size="large" color="#3498db" style={{ marginTop: 20 }} />
         ) : (
           <TouchableOpacity style={loginStyles.btn} onPress={handleSubmit}>
-            <Text style={loginStyles.btnText}>{isRegister ? 'Create Account' : 'Sign In'}</Text>
+            <Text style={loginStyles.btnText}>
+              {isRegister ? 'Create Account' : 'Sign In'}
+            </Text>
           </TouchableOpacity>
         )}
 
@@ -142,21 +162,22 @@ export default function HomeScreen() {
   const [, setNow] = useState(Date.now());
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setAuthReady(true);
-    });
+    const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setAuthReady(true); });
     return unsub;
   }, []);
+
+  useEffect(() => {
+    if (!user?.uid) return;
+    registerForPushNotifications(user.uid);
+  }, [user?.uid]);
 
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 30000);
     return () => clearInterval(interval);
   }, []);
 
-  // 🔥 Real-time sync — every family member sees the same state instantly
   useEffect(() => {
-    if (!user) return;
+    if (!user?.uid) return;
     const ref = doc(db, 'households', HOUSEHOLD_ID);
     const unsub = onSnapshot(ref, (snap) => {
       if (snap.exists()) {
@@ -169,40 +190,15 @@ export default function HomeScreen() {
       }
     });
     return unsub;
-  }, [user]);
+  }, [user?.uid]);
 
-  const status = getStatus(lastWalkTime, isOut);
-  const hoursSince = lastWalkTime
-    ? ((Date.now() - lastWalkTime) / (1000 * 60 * 60)).toFixed(1)
-    : null;
-  const walkerName = user?.email?.split('@')[0] ?? 'Someone';
-
-  async function handleTakeOut() {
-    const now = Date.now();
-    const ref = doc(db, 'households', HOUSEHOLD_ID);
-    await setDoc(ref, {
-      isOut: true,
-      walkStartTime: now,
-      currentWalker: walkerName,
-      lastWalkTime,
-      walkHistory,
-    });
-  }
-
-  async function handleBackHome() {
-    const endTime = Date.now();
-    const duration = endTime - (walkStartTime ?? endTime);
-    const newEntry = { id: endTime, start: walkStartTime, end: endTime, duration, takenBy: walkerName };
-    const ref = doc(db, 'households', HOUSEHOLD_ID);
-    await setDoc(ref, {
-      isOut: false,
-      walkStartTime: null,
-      currentWalker: '',
-      lastWalkTime: endTime,
-      walkHistory: [newEntry, ...walkHistory].slice(0, 10),
-    });
-    Alert.alert('Walk logged! 🐾', `Great walk — ${formatDuration(duration)}`);
-  }
+  useEffect(() => {
+    if (!user?.uid) return;
+    if (isNightTime()) { cancelOverdueReminders(); return; }
+    const status = getStatus(lastWalkTime, isOut);
+    if (status === STATUS.OVERDUE) scheduleOverdueReminders();
+    else cancelOverdueReminders();
+  }, [lastWalkTime, isOut, user?.uid]);
 
   if (!authReady) return (
     <SafeAreaView style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
@@ -211,6 +207,33 @@ export default function HomeScreen() {
   );
 
   if (!user) return <LoginScreen onLogin={setUser} />;
+
+  const status = getStatus(lastWalkTime, isOut);
+  const hoursSince = lastWalkTime
+    ? ((Date.now() - lastWalkTime) / (1000 * 60 * 60)).toFixed(1)
+    : null;
+  const walkerName = user.displayName || user.email?.split('@')[0] || 'Someone';
+
+  async function handleTakeOut() {
+    const now = Date.now();
+    const ref = doc(db, 'households', HOUSEHOLD_ID);
+    await setDoc(ref, { isOut: true, walkStartTime: now, currentWalker: walkerName, lastWalkTime, walkHistory });
+    await notifyFamily(user.uid, `🐾 ${DOG_NAME} is going out!`, `${walkerName} is taking ${DOG_NAME} for a walk`);
+    await cancelOverdueReminders();
+  }
+
+  async function handleBackHome() {
+    const endTime = Date.now();
+    const duration = endTime - (walkStartTime ?? endTime);
+    const newEntry = { id: endTime, start: walkStartTime, end: endTime, duration, takenBy: walkerName };
+    const ref = doc(db, 'households', HOUSEHOLD_ID);
+    await setDoc(ref, {
+      isOut: false, walkStartTime: null, currentWalker: '',
+      lastWalkTime: endTime,
+      walkHistory: [newEntry, ...walkHistory].slice(0, 10),
+    });
+    Alert.alert('Walk logged! 🐾', `Great walk — ${formatDuration(duration)}`);
+  }
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: status.bg }]}>
@@ -224,18 +247,12 @@ export default function HomeScreen() {
           <View style={[styles.statusDot, { backgroundColor: status.color }]} />
           <Text style={[styles.statusLabel, { color: status.color }]}>{status.label}</Text>
           <Text style={styles.statusMsg}>{status.msg}</Text>
-          {isOut && currentWalker && (
-            <Text style={styles.subText}>🚶 {currentWalker} is on the walk</Text>
-          )}
+          {isOut && currentWalker && <Text style={styles.subText}>🚶 {currentWalker} is on the walk</Text>}
           {lastWalkTime && !isOut && (
             <Text style={styles.subText}>Last walk: {formatTime(lastWalkTime)}  ({hoursSince}h ago)</Text>
           )}
-          {isOut && walkStartTime && (
-            <Text style={styles.subText}>Started at {formatTime(walkStartTime)}</Text>
-          )}
-          {!isNightTime() && (
-            <Text style={styles.subText}>Window: {getCurrentInterval()}h</Text>
-          )}
+          {isOut && walkStartTime && <Text style={styles.subText}>Started at {formatTime(walkStartTime)}</Text>}
+          {!isNightTime() && <Text style={styles.subText}>Window: {getCurrentInterval()}h</Text>}
         </View>
 
         {!isOut ? (
@@ -248,11 +265,13 @@ export default function HomeScreen() {
           </TouchableOpacity>
         )}
 
+        {/* Recent Walks with time-of-day emoji */}
         {walkHistory.length > 0 && (
           <View style={styles.historySection}>
             <Text style={styles.historyTitle}>Recent Walks</Text>
             {walkHistory.map((entry: any) => (
               <View key={entry.id} style={styles.historyRow}>
+                <Text style={styles.historyEmoji}>{timeOfDayEmoji(entry.start)}</Text>
                 <Text style={styles.historyTime}>{formatTime(entry.start)}</Text>
                 <Text style={styles.historyDur}>{formatDuration(entry.duration)}</Text>
                 <Text style={styles.historyWho}>{entry.takenBy}</Text>
@@ -278,8 +297,7 @@ const loginStyles = StyleSheet.create({
   subtitle: { fontSize: 16, color: '#888', marginBottom: 32 },
   input: {
     width: '100%', backgroundColor: '#fff', borderRadius: 12,
-    padding: 16, fontSize: 16, marginBottom: 12,
-    borderWidth: 1, borderColor: '#ddd',
+    padding: 16, fontSize: 16, marginBottom: 12, borderWidth: 1, borderColor: '#ddd',
   },
   btn: { width: '100%', backgroundColor: '#3498db', padding: 18, borderRadius: 16, alignItems: 'center', marginTop: 8 },
   btnText: { color: '#fff', fontSize: 18, fontWeight: '700' },
@@ -312,12 +330,13 @@ const styles = StyleSheet.create({
   historySection: { width: '100%', marginTop: 16 },
   historyTitle: { fontSize: 18, fontWeight: '700', color: '#2c3e50', marginBottom: 12 },
   historyRow: {
-    flexDirection: 'row', justifyContent: 'space-between',
+    flexDirection: 'row', alignItems: 'center',
     backgroundColor: '#fff', borderRadius: 12, padding: 14, marginBottom: 8,
     shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 4, elevation: 2,
   },
-  historyTime: { fontSize: 15, color: '#2c3e50', fontWeight: '600' },
-  historyDur: { fontSize: 15, color: '#3498db', fontWeight: '600' },
+  historyEmoji: { fontSize: 18, marginRight: 8 },
+  historyTime: { fontSize: 15, color: '#2c3e50', fontWeight: '600', marginRight: 8 },
+  historyDur: { flex: 1, fontSize: 15, color: '#3498db', fontWeight: '600' },
   historyWho: { fontSize: 15, color: '#888' },
   noHistory: { color: '#aaa', marginTop: 24, fontSize: 14 },
 });
