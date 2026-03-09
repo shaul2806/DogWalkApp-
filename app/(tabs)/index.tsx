@@ -1,36 +1,30 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet, Text, View, TouchableOpacity,
-  SafeAreaView, ScrollView, Alert, TextInput, ActivityIndicator
+  SafeAreaView, ScrollView, Alert, TextInput,
+  ActivityIndicator, Animated
 } from 'react-native';
 import { db, auth } from '../../firebaseConfig';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 import {
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  onAuthStateChanged,
-  updateProfile,
-  User
+  signInWithEmailAndPassword, createUserWithEmailAndPassword,
+  onAuthStateChanged, updateProfile, User
 } from 'firebase/auth';
 import {
-  registerForPushNotifications,
-  notifyFamily,
-  scheduleOverdueReminders,
-  cancelOverdueReminders,
+  registerForPushNotifications, notifyFamily,
+  scheduleOverdueReminders, cancelOverdueReminders,
 } from '../../notifications';
-import { timeOfDayEmoji, formatTime, formatDuration } from '../../utils';
+import { TimeOfDayIcon, formatTime, formatDuration } from '../../utils';
 
-// ─── CONFIG ────────────────────────────────────────────
-const DOG_NAME = "Balu";
-const HOUSEHOLD_ID = "balu_family";
+const HOUSEHOLD_ID = 'balu_family';
+const FALLBACK_DOG = 'Your Dog';
 
 const SCHEDULE = [
-  { label: "Morning",   from: 6,  to: 10, intervalHours: 4  },
-  { label: "Daytime",   from: 10, to: 18, intervalHours: 5  },
-  { label: "Evening",   from: 18, to: 23, intervalHours: 4  },
-  { label: "Night",     from: 23, to: 6,  intervalHours: 11 },
+  { from: 6,  to: 10, intervalHours: 4  },
+  { from: 10, to: 18, intervalHours: 5  },
+  { from: 18, to: 23, intervalHours: 4  },
+  { from: 23, to: 6,  intervalHours: 11 },
 ];
-// ───────────────────────────────────────────────────────
 
 function getCurrentInterval(): number {
   const hour = new Date().getHours();
@@ -45,36 +39,89 @@ function getCurrentInterval(): number {
 }
 
 const STATUS = {
-  GOOD:    { label: 'All Good 🟢',  color: '#2ecc71', bg: '#eafaf1', msg: `${DOG_NAME} is all good!` },
-  SOON:    { label: 'Soon 🟡',      color: '#f1c40f', bg: '#fefde7', msg: 'Getting close to walk time...' },
-  OVERDUE: { label: 'Needs Out 🔴', color: '#e74c3c', bg: '#fdecea', msg: 'Take me out please! 🐶' },
-  OUT:     { label: 'Out Now 🔵',   color: '#3498db', bg: '#eaf4fb', msg: 'Currently on a walk!' },
-  NIGHT:   { label: 'Sleeping 🌙',  color: '#8e44ad', bg: '#f5eef8', msg: 'Night time — all good' },
+  GOOD:    { label: 'All Good',   color: '#27ae60', glow: '#2ecc7133', bg: '#f0faf4', msg: 'All good!',                    emoji: '\uD83D\uDE0A' },
+  SOON:    { label: 'Walk Soon',  color: '#e67e22', glow: '#f39c1233', bg: '#fef9f0', msg: 'Getting close to walk time...', emoji: '\uD83D\uDD50' },
+  OVERDUE: { label: 'Needs Out!', color: '#e74c3c', glow: '#e74c3c44', bg: '#fef5f5', msg: 'Take me out please!',           emoji: '\uD83C\uDD98' },
+  OUT:     { label: 'On a Walk',  color: '#2980b9', glow: '#3498db33', bg: '#f0f7ff', msg: 'Currently on a walk!',          emoji: '\uD83D\uDEB6' },
+  NIGHT:   { label: 'Sleeping',   color: '#8e44ad', glow: '#8e44ad33', bg: '#faf5ff', msg: 'Night time - all good',         emoji: '\uD83D\uDE34' },
 };
 
-function isNightTime(): boolean {
-  const hour = new Date().getHours();
-  return hour >= 23 || hour < 6;
+function isNightTime() {
+  const h = new Date().getHours();
+  return h >= 23 || h < 6;
 }
 
 function getStatus(lastWalkTime: number | null, isOut: boolean) {
   if (isOut) return STATUS.OUT;
   if (isNightTime()) return STATUS.NIGHT;
   if (!lastWalkTime) return STATUS.OVERDUE;
-  const hours = (Date.now() - lastWalkTime) / (1000 * 60 * 60);
+  const hours    = (Date.now() - lastWalkTime) / (1000 * 60 * 60);
   const interval = getCurrentInterval();
   if (hours < interval * 0.65) return STATUS.GOOD;
-  if (hours < interval) return STATUS.SOON;
+  if (hours < interval)        return STATUS.SOON;
   return STATUS.OVERDUE;
 }
 
-// ─── LOGIN SCREEN ───────────────────────────────────────
+// PAW TAG
+function PawTag({ color, glow, isOverdue }: { color: string; glow: string; isOverdue: boolean }) {
+  const pulse   = useRef(new Animated.Value(1)).current;
+  const shimmer = useRef(new Animated.Value(0.6)).current;
+
+  useEffect(() => {
+    pulse.stopAnimation();
+    shimmer.stopAnimation();
+    if (isOverdue) {
+      Animated.loop(Animated.sequence([
+        Animated.timing(pulse, { toValue: 1.08, duration: 600, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1.0,  duration: 600, useNativeDriver: true }),
+      ])).start();
+    } else {
+      pulse.setValue(1);
+      Animated.loop(Animated.sequence([
+        Animated.timing(shimmer, { toValue: 1.0, duration: 2200, useNativeDriver: true }),
+        Animated.timing(shimmer, { toValue: 0.6, duration: 2200, useNativeDriver: true }),
+      ])).start();
+    }
+  }, [isOverdue, color]);
+
+  const TOE = 24, PAD_W = 76, PAD_H = 66;
+
+  return (
+    <Animated.View style={[tag.container, { transform: [{ scale: pulse }] }]}>
+      <Animated.View style={[tag.glow, { backgroundColor: glow, width: 170, height: 160, opacity: shimmer }]} />
+      <View style={[tag.ring, { borderColor: color }]} />
+      <View style={{ alignItems: 'center', paddingTop: 6 }}>
+        <View style={tag.toeRow}>
+          <View style={[tag.toe, { width: TOE * 0.82, height: TOE * 0.82, borderRadius: TOE * 0.45, backgroundColor: color, marginTop: 7, marginRight: 3 }]} />
+          <View style={[tag.toe, { width: TOE,        height: TOE,         borderRadius: TOE * 0.5,  backgroundColor: color, marginRight: 2 }]} />
+          <View style={[tag.toe, { width: TOE,        height: TOE,         borderRadius: TOE * 0.5,  backgroundColor: color, marginLeft:  2 }]} />
+          <View style={[tag.toe, { width: TOE * 0.82, height: TOE * 0.82, borderRadius: TOE * 0.45, backgroundColor: color, marginTop: 7, marginLeft: 3 }]} />
+        </View>
+        <View style={[tag.pad, { width: PAD_W, height: PAD_H, backgroundColor: color }]}>
+          <View style={tag.shine} />
+        </View>
+      </View>
+    </Animated.View>
+  );
+}
+
+const tag = StyleSheet.create({
+  container: { alignItems: 'center', marginBottom: 4, marginTop: 8 },
+  glow:      { position: 'absolute', borderRadius: 999, top: 8 },
+  ring:      { width: 22, height: 15, borderRadius: 11, borderWidth: 2.5, backgroundColor: 'transparent', marginBottom: -3, zIndex: 2 },
+  toeRow:    { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'center', marginBottom: 3 },
+  toe:       { shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 3, elevation: 2 },
+  pad:       { borderRadius: 36, shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 6, elevation: 3, overflow: 'hidden' },
+  shine:     { position: 'absolute', top: 10, left: 12, width: 20, height: 13, borderRadius: 9, backgroundColor: 'rgba(255,255,255,0.20)', transform: [{ rotate: '-18deg' }] },
+});
+
+// LOGIN
 function LoginScreen({ onLogin }: { onLogin: (u: User) => void }) {
   const [displayName, setDisplayName] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [isRegister, setIsRegister] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [email, setEmail]             = useState('');
+  const [password, setPassword]       = useState('');
+  const [isRegister, setIsRegister]   = useState(false);
+  const [loading, setLoading]         = useState(false);
 
   async function handleSubmit() {
     if (!email || !password) return Alert.alert('Please enter email and password');
@@ -89,77 +136,50 @@ function LoginScreen({ onLogin }: { onLogin: (u: User) => void }) {
         result = await signInWithEmailAndPassword(auth, email, password);
       }
       onLogin(result.user);
-    } catch (e: any) {
-      Alert.alert('Error', e.message);
-    }
+    } catch (e: any) { Alert.alert('Error', e.message); }
     setLoading(false);
   }
 
   return (
-    <SafeAreaView style={loginStyles.safe}>
-      <View style={loginStyles.container}>
-        <Text style={loginStyles.emoji}>🐾</Text>
-        <Text style={loginStyles.title}>DogWalk</Text>
-        <Text style={loginStyles.subtitle}>{DOG_NAME}'s family app</Text>
-
+    <SafeAreaView style={ls.safe}>
+      <View style={ls.container}>
+        <Text style={ls.paw}>🐾</Text>
+        <Text style={ls.title}>PowSignal</Text>
+        <Text style={ls.subtitle}>Family dog walk tracker</Text>
         {isRegister && (
-          <TextInput
-            style={loginStyles.input}
-            placeholder="Your name (e.g. Dad, Mom)"
-            placeholderTextColor="#999"
-            value={displayName}
-            onChangeText={setDisplayName}
-            autoCapitalize="words"
-          />
+          <TextInput style={ls.input} placeholder="Your name (e.g. Dad, Mom)"
+            placeholderTextColor="#aaa" value={displayName} onChangeText={setDisplayName} autoCapitalize="words" />
         )}
-        <TextInput
-          style={loginStyles.input}
-          placeholder="Email address"
-          placeholderTextColor="#999"
-          value={email}
-          onChangeText={setEmail}
-          keyboardType="email-address"
-          autoCapitalize="none"
-        />
-        <TextInput
-          style={loginStyles.input}
-          placeholder="Password"
-          placeholderTextColor="#999"
-          value={password}
-          onChangeText={setPassword}
-          secureTextEntry
-        />
-
-        {loading ? (
-          <ActivityIndicator size="large" color="#3498db" style={{ marginTop: 20 }} />
-        ) : (
-          <TouchableOpacity style={loginStyles.btn} onPress={handleSubmit}>
-            <Text style={loginStyles.btnText}>
-              {isRegister ? 'Create Account' : 'Sign In'}
-            </Text>
-          </TouchableOpacity>
-        )}
-
+        <TextInput style={ls.input} placeholder="Email address"
+          placeholderTextColor="#aaa" value={email} onChangeText={setEmail}
+          keyboardType="email-address" autoCapitalize="none" />
+        <TextInput style={ls.input} placeholder="Password"
+          placeholderTextColor="#aaa" value={password} onChangeText={setPassword} secureTextEntry />
+        {loading
+          ? <ActivityIndicator size="large" color="#8B5E3C" style={{ marginTop: 20 }} />
+          : <TouchableOpacity style={ls.btn} onPress={handleSubmit}>
+              <Text style={ls.btnText}>{isRegister ? 'Create Account' : 'Sign In'}</Text>
+            </TouchableOpacity>
+        }
         <TouchableOpacity onPress={() => setIsRegister(!isRegister)} style={{ marginTop: 16 }}>
-          <Text style={loginStyles.toggle}>
-            {isRegister ? 'Already have an account? Sign in' : 'New user? Create account'}
-          </Text>
+          <Text style={ls.toggle}>{isRegister ? 'Already have an account? Sign in' : 'New user? Create account'}</Text>
         </TouchableOpacity>
       </View>
     </SafeAreaView>
   );
 }
 
-// ─── MAIN APP ───────────────────────────────────────────
+// MAIN
 export default function HomeScreen() {
-  const [user, setUser] = useState<User | null>(null);
-  const [authReady, setAuthReady] = useState(false);
-  const [lastWalkTime, setLastWalkTime] = useState<number | null>(null);
-  const [isOut, setIsOut] = useState(false);
+  const [user, setUser]                   = useState<User | null>(null);
+  const [authReady, setAuthReady]         = useState(false);
+  const [dogName, setDogName]             = useState(FALLBACK_DOG);
+  const [lastWalkTime, setLastWalkTime]   = useState<number | null>(null);
+  const [isOut, setIsOut]                 = useState(false);
   const [walkStartTime, setWalkStartTime] = useState<number | null>(null);
-  const [currentWalker, setCurrentWalker] = useState<string>('');
-  const [walkHistory, setWalkHistory] = useState<any[]>([]);
-  const [, setNow] = useState(Date.now());
+  const [currentWalker, setCurrentWalker] = useState('');
+  const [walkHistory, setWalkHistory]     = useState<any[]>([]);
+  const [, setNow]                        = useState(Date.now());
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setAuthReady(true); });
@@ -172,21 +192,22 @@ export default function HomeScreen() {
   }, [user?.uid]);
 
   useEffect(() => {
-    const interval = setInterval(() => setNow(Date.now()), 30000);
-    return () => clearInterval(interval);
+    const iv = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(iv);
   }, []);
 
   useEffect(() => {
     if (!user?.uid) return;
-    const ref = doc(db, 'households', HOUSEHOLD_ID);
+    const ref   = doc(db, 'households', HOUSEHOLD_ID);
     const unsub = onSnapshot(ref, (snap) => {
       if (snap.exists()) {
-        const data = snap.data();
-        setLastWalkTime(data.lastWalkTime ?? null);
-        setIsOut(data.isOut ?? false);
-        setWalkStartTime(data.walkStartTime ?? null);
-        setCurrentWalker(data.currentWalker ?? '');
-        setWalkHistory(data.walkHistory ?? []);
+        const d = snap.data();
+        setDogName(d.dogName || FALLBACK_DOG);
+        setLastWalkTime(d.lastWalkTime ?? null);
+        setIsOut(d.isOut ?? false);
+        setWalkStartTime(d.walkStartTime ?? null);
+        setCurrentWalker(d.currentWalker ?? '');
+        setWalkHistory(d.walkHistory ?? []);
       }
     });
     return unsub;
@@ -195,93 +216,115 @@ export default function HomeScreen() {
   useEffect(() => {
     if (!user?.uid) return;
     if (isNightTime()) { cancelOverdueReminders(); return; }
-    const status = getStatus(lastWalkTime, isOut);
-    if (status === STATUS.OVERDUE) scheduleOverdueReminders();
+    if (getStatus(lastWalkTime, isOut) === STATUS.OVERDUE) scheduleOverdueReminders();
     else cancelOverdueReminders();
   }, [lastWalkTime, isOut, user?.uid]);
 
   if (!authReady) return (
-    <SafeAreaView style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-      <ActivityIndicator size="large" color="#3498db" />
+    <SafeAreaView style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FAF6F1' }}>
+      <ActivityIndicator size="large" color="#8B5E3C" />
     </SafeAreaView>
   );
 
   if (!user) return <LoginScreen onLogin={setUser} />;
 
-  const status = getStatus(lastWalkTime, isOut);
-  const hoursSince = lastWalkTime
-    ? ((Date.now() - lastWalkTime) / (1000 * 60 * 60)).toFixed(1)
-    : null;
+  const status     = getStatus(lastWalkTime, isOut);
+  const isOverdue  = status === STATUS.OVERDUE;
+  const hoursSince = lastWalkTime ? ((Date.now() - lastWalkTime) / 3600000).toFixed(1) : null;
   const walkerName = user.displayName || user.email?.split('@')[0] || 'Someone';
 
   async function handleTakeOut() {
     const now = Date.now();
-    const ref = doc(db, 'households', HOUSEHOLD_ID);
-    await setDoc(ref, { isOut: true, walkStartTime: now, currentWalker: walkerName, lastWalkTime, walkHistory });
-    await notifyFamily(user.uid, `🐾 ${DOG_NAME} is going out!`, `${walkerName} is taking ${DOG_NAME} for a walk`);
+    await setDoc(doc(db, 'households', HOUSEHOLD_ID), {
+      isOut: true, walkStartTime: now, currentWalker: walkerName,
+      lastWalkTime, walkHistory, dogName,
+    });
+    await notifyFamily(user.uid, `${dogName} is going out!`, `${walkerName} is taking ${dogName} for a walk`);
     await cancelOverdueReminders();
   }
 
   async function handleBackHome() {
-    const endTime = Date.now();
+    const endTime  = Date.now();
     const duration = endTime - (walkStartTime ?? endTime);
     const newEntry = { id: endTime, start: walkStartTime, end: endTime, duration, takenBy: walkerName };
-    const ref = doc(db, 'households', HOUSEHOLD_ID);
-    await setDoc(ref, {
+    await setDoc(doc(db, 'households', HOUSEHOLD_ID), {
       isOut: false, walkStartTime: null, currentWalker: '',
-      lastWalkTime: endTime,
-      walkHistory: [newEntry, ...walkHistory].slice(0, 10),
+      lastWalkTime: endTime, dogName,
+      walkHistory: [newEntry, ...walkHistory].slice(0, 20),
     });
     Alert.alert('Walk logged! 🐾', `Great walk — ${formatDuration(duration)}`);
   }
 
   return (
-    <SafeAreaView style={[styles.safe, { backgroundColor: status.bg }]}>
-      <ScrollView contentContainerStyle={styles.container}>
+    <SafeAreaView style={[s.safe, { backgroundColor: status.bg }]}>
+      <ScrollView contentContainerStyle={s.container}>
 
-        <Text style={styles.appTitle}>🐾 DogWalk</Text>
-        <Text style={styles.dogName}>{DOG_NAME}</Text>
-        <Text style={styles.userBadge}>👤 {walkerName}</Text>
+        <View style={s.header}>
+          <View>
+            <Text style={s.appTitle}>POWSIGNAL</Text>
+            <Text style={s.dogName}>{dogName} 🐶</Text>
+          </View>
+          <View style={s.userPill}>
+            <Text style={s.userPillText}>👤 {walkerName}</Text>
+          </View>
+        </View>
 
-        <View style={[styles.statusCard, { borderColor: status.color }]}>
-          <View style={[styles.statusDot, { backgroundColor: status.color }]} />
-          <Text style={[styles.statusLabel, { color: status.color }]}>{status.label}</Text>
-          <Text style={styles.statusMsg}>{status.msg}</Text>
-          {isOut && currentWalker && <Text style={styles.subText}>🚶 {currentWalker} is on the walk</Text>}
-          {lastWalkTime && !isOut && (
-            <Text style={styles.subText}>Last walk: {formatTime(lastWalkTime)}  ({hoursSince}h ago)</Text>
-          )}
-          {isOut && walkStartTime && <Text style={styles.subText}>Started at {formatTime(walkStartTime)}</Text>}
-          {!isNightTime() && <Text style={styles.subText}>Window: {getCurrentInterval()}h</Text>}
+        <View style={[s.statusCard, { borderColor: status.color + '33' }]}>
+          <PawTag color={status.color} glow={status.glow} isOverdue={isOverdue} />
+          <Text style={[s.statusLabel, { color: status.color }]}>{status.emoji}  {status.label}</Text>
+          <Text style={s.statusMsg}>{status.msg}</Text>
+          <View style={s.metaRow}>
+            {isOut && currentWalker && (
+              <View style={[s.metaPill, { backgroundColor: status.color + '18' }]}>
+                <Text style={[s.metaText, { color: status.color }]}>🚶 {currentWalker} is walking</Text>
+              </View>
+            )}
+            {lastWalkTime && !isOut && (
+              <View style={[s.metaPill, { backgroundColor: status.color + '18' }]}>
+                <Text style={[s.metaText, { color: status.color }]}>Last: {formatTime(lastWalkTime)} · {hoursSince}h ago</Text>
+              </View>
+            )}
+            {isOut && walkStartTime && (
+              <View style={[s.metaPill, { backgroundColor: status.color + '18' }]}>
+                <Text style={[s.metaText, { color: status.color }]}>Started at {formatTime(walkStartTime)}</Text>
+              </View>
+            )}
+            {!isNightTime() && (
+              <View style={s.metaPill}>
+                <Text style={s.metaText}>⏱ {getCurrentInterval()}h window</Text>
+              </View>
+            )}
+          </View>
         </View>
 
         {!isOut ? (
-          <TouchableOpacity style={[styles.btn, { backgroundColor: '#3498db' }]} onPress={handleTakeOut}>
-            <Text style={styles.btnText}>🚶 Taking {DOG_NAME} Out</Text>
+          <TouchableOpacity style={[s.btn, { backgroundColor: status.color }]} onPress={handleTakeOut}>
+            <Text style={s.btnText}>🐾  Taking {dogName} Out</Text>
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity style={[styles.btn, { backgroundColor: '#2ecc71' }]} onPress={handleBackHome}>
-            <Text style={styles.btnText}>🏠 Back Home — Log Walk</Text>
+          <TouchableOpacity style={[s.btn, { backgroundColor: '#27ae60' }]} onPress={handleBackHome}>
+            <Text style={s.btnText}>🏠  Back Home — Log Walk</Text>
           </TouchableOpacity>
         )}
 
-        {/* Recent Walks with time-of-day emoji */}
         {walkHistory.length > 0 && (
-          <View style={styles.historySection}>
-            <Text style={styles.historyTitle}>Recent Walks</Text>
+          <View style={s.historySection}>
+            <Text style={s.historyTitle}>Recent Walks</Text>
             {walkHistory.map((entry: any) => (
-              <View key={entry.id} style={styles.historyRow}>
-                <Text style={styles.historyEmoji}>{timeOfDayEmoji(entry.start)}</Text>
-                <Text style={styles.historyTime}>{formatTime(entry.start)}</Text>
-                <Text style={styles.historyDur}>{formatDuration(entry.duration)}</Text>
-                <Text style={styles.historyWho}>{entry.takenBy}</Text>
+              <View key={entry.id} style={s.historyRow}>
+                <TimeOfDayIcon ts={entry.start} size={38} />
+                <View style={s.historyInfo}>
+                  <Text style={s.historyTime}>{formatTime(entry.start)}</Text>
+                  <Text style={s.historyWho}>{entry.takenBy}</Text>
+                </View>
+                <Text style={s.historyDur}>{formatDuration(entry.duration)}</Text>
               </View>
             ))}
           </View>
         )}
 
         {walkHistory.length === 0 && !isOut && (
-          <Text style={styles.noHistory}>No walks logged yet today</Text>
+          <Text style={s.noHistory}>No walks logged yet today 🐾</Text>
         )}
 
       </ScrollView>
@@ -289,54 +332,40 @@ export default function HomeScreen() {
   );
 }
 
-const loginStyles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#eaf4fb' },
+const ls = StyleSheet.create({
+  safe:      { flex: 1, backgroundColor: '#FAF6F1' },
   container: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
-  emoji: { fontSize: 60, marginBottom: 8 },
-  title: { fontSize: 36, fontWeight: '800', color: '#2c3e50' },
-  subtitle: { fontSize: 16, color: '#888', marginBottom: 32 },
-  input: {
-    width: '100%', backgroundColor: '#fff', borderRadius: 12,
-    padding: 16, fontSize: 16, marginBottom: 12, borderWidth: 1, borderColor: '#ddd',
-  },
-  btn: { width: '100%', backgroundColor: '#3498db', padding: 18, borderRadius: 16, alignItems: 'center', marginTop: 8 },
-  btnText: { color: '#fff', fontSize: 18, fontWeight: '700' },
-  toggle: { color: '#3498db', fontSize: 14 },
+  paw:       { fontSize: 64, marginBottom: 8 },
+  title:     { fontSize: 32, fontWeight: '800', color: '#8B5E3C', textAlign: 'center' },
+  subtitle:  { fontSize: 15, color: '#B8956A', marginBottom: 36, textAlign: 'center' },
+  input:     { width: '100%', backgroundColor: '#fff', borderRadius: 14, padding: 16, fontSize: 16, marginBottom: 12, borderWidth: 1.5, borderColor: '#EDE0D4', color: '#3d2b1f' },
+  btn:       { width: '100%', backgroundColor: '#8B5E3C', padding: 18, borderRadius: 16, alignItems: 'center', marginTop: 8 },
+  btnText:   { color: '#fff', fontSize: 17, fontWeight: '700' },
+  toggle:    { color: '#8B5E3C', fontSize: 14 },
 });
 
-const styles = StyleSheet.create({
-  safe: { flex: 1 },
-  container: { alignItems: 'center', padding: 24, paddingBottom: 60 },
-  appTitle: { fontSize: 16, color: '#888', marginTop: 10, letterSpacing: 2 },
-  dogName: { fontSize: 42, fontWeight: '800', color: '#2c3e50', marginBottom: 4 },
-  userBadge: { fontSize: 14, color: '#888', marginBottom: 20 },
-  statusCard: {
-    width: '100%', borderRadius: 24, borderWidth: 3,
-    backgroundColor: '#fff', padding: 28, alignItems: 'center', marginBottom: 28,
-    shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 12, elevation: 4,
-  },
-  statusDot: {
-    width: 80, height: 80, borderRadius: 40, marginBottom: 16,
-    shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 8, elevation: 4,
-  },
-  statusLabel: { fontSize: 26, fontWeight: '700', marginBottom: 6 },
-  statusMsg: { fontSize: 16, color: '#666', marginBottom: 6 },
-  subText: { fontSize: 13, color: '#999', marginTop: 4 },
-  btn: {
-    width: '100%', padding: 18, borderRadius: 16, alignItems: 'center', marginBottom: 16,
-    shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 8, elevation: 3,
-  },
-  btnText: { color: '#fff', fontSize: 18, fontWeight: '700' },
-  historySection: { width: '100%', marginTop: 16 },
-  historyTitle: { fontSize: 18, fontWeight: '700', color: '#2c3e50', marginBottom: 12 },
-  historyRow: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#fff', borderRadius: 12, padding: 14, marginBottom: 8,
-    shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 4, elevation: 2,
-  },
-  historyEmoji: { fontSize: 18, marginRight: 8 },
-  historyTime: { fontSize: 15, color: '#2c3e50', fontWeight: '600', marginRight: 8 },
-  historyDur: { flex: 1, fontSize: 15, color: '#3498db', fontWeight: '600' },
-  historyWho: { fontSize: 15, color: '#888' },
-  noHistory: { color: '#aaa', marginTop: 24, fontSize: 14 },
+const s = StyleSheet.create({
+  safe:         { flex: 1 },
+  container:    { padding: 24, paddingBottom: 60 },
+  header:       { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, marginTop: 8 },
+  appTitle:     { fontSize: 11, color: '#C4A882', fontWeight: '700', letterSpacing: 3 },
+  dogName:      { fontSize: 28, fontWeight: '800', color: '#3d2b1f', marginTop: 2 },
+  userPill:     { backgroundColor: '#fff', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8, borderWidth: 1, borderColor: '#EDE0D4' },
+  userPillText: { fontSize: 13, color: '#8B5E3C', fontWeight: '600' },
+  statusCard:   { backgroundColor: '#fff', borderRadius: 28, borderWidth: 2, padding: 28, alignItems: 'center', marginBottom: 20, shadowColor: '#8B5E3C', shadowOpacity: 0.08, shadowRadius: 20, elevation: 5 },
+  statusLabel:  { fontSize: 24, fontWeight: '800', marginBottom: 6, marginTop: 4 },
+  statusMsg:    { fontSize: 15, color: '#888', marginBottom: 16 },
+  metaRow:      { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 8 },
+  metaPill:     { backgroundColor: '#F5EDE4', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 6 },
+  metaText:     { fontSize: 13, color: '#8B5E3C', fontWeight: '500' },
+  btn:          { width: '100%', padding: 20, borderRadius: 18, alignItems: 'center', marginBottom: 20, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 10, elevation: 4 },
+  btnText:      { color: '#fff', fontSize: 17, fontWeight: '800', letterSpacing: 0.3 },
+  historySection: { marginTop: 8 },
+  historyTitle:   { fontSize: 16, fontWeight: '700', color: '#3d2b1f', marginBottom: 12 },
+  historyRow:     { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, padding: 12, marginBottom: 8, borderWidth: 1, borderColor: '#EDE0D4' },
+  historyInfo:    { flex: 1, marginLeft: 12 },
+  historyTime:    { fontSize: 15, color: '#3d2b1f', fontWeight: '700' },
+  historyWho:     { fontSize: 12, color: '#B8956A', marginTop: 2 },
+  historyDur:     { fontSize: 15, color: '#8B5E3C', fontWeight: '700' },
+  noHistory:      { textAlign: 'center', color: '#C4A882', marginTop: 32, fontSize: 15 },
 });
