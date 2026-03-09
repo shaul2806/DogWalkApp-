@@ -5,19 +5,19 @@ import {
 } from 'react-native';
 import { db, auth } from '../../firebaseConfig';
 import { doc, onSnapshot } from 'firebase/firestore';
-import { timeOfDayEmoji, formatTime, formatDuration } from '../../utils';
+import { TimeOfDayIcon, formatTime, formatDuration } from '../../utils';
+import { t, Lang } from '../../translations';
 
-const DOG_NAME = 'Balu';
 const HOUSEHOLD_ID = 'balu_family';
 
-function formatDate(ts: number): string {
+function formatDate(ts: number, lang: Lang): string {
   const d = new Date(ts);
-  const today = new Date();
+  const today     = new Date();
   const yesterday = new Date();
   yesterday.setDate(today.getDate() - 1);
-  if (d.toDateString() === today.toDateString()) return 'Today';
-  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
-  return d.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+  if (d.toDateString() === today.toDateString())     return t(lang, 'today');
+  if (d.toDateString() === yesterday.toDateString()) return t(lang, 'yesterday');
+  return d.toLocaleDateString(lang === 'he' ? 'he-IL' : 'en-US', { weekday: 'long', month: 'short', day: 'numeric' });
 }
 
 function getDayKey(ts: number): string {
@@ -48,107 +48,114 @@ function buildLeaderboard(walks: any[]) {
     .sort((a, b) => b.count - a.count);
 }
 
-function StatCard({ label, value, sub, color }: {
-  label: string; value: string; sub?: string; color: string;
+function StatCard({ label, value, sub, color, rtl }: {
+  label: string; value: string; sub?: string; color: string; rtl?: boolean;
 }) {
   return (
-    <View style={[styles.statCard, { borderLeftColor: color }]}>
-      <Text style={styles.statValue}>{value}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
-      {sub && <Text style={styles.statSub}>{sub}</Text>}
+    <View style={[styles.statCard, { borderLeftColor: rtl ? 'transparent' : color, borderRightColor: rtl ? color : 'transparent' }]}>
+      <Text style={[styles.statValue, rtl && styles.rtl]}>{value}</Text>
+      <Text style={[styles.statLabel, rtl && styles.rtl]}>{label}</Text>
+      {sub && <Text style={[styles.statSub, rtl && styles.rtl]}>{sub}</Text>}
     </View>
   );
 }
 
 export default function HistoryScreen() {
   const [walkHistory, setWalkHistory] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [dogName, setDogName]         = useState('');
+  const [lang, setLang]               = useState<Lang>('en');
+  const [loading, setLoading]         = useState(true);
 
   useEffect(() => {
     if (!auth.currentUser) return;
-    const ref = doc(db, 'households', HOUSEHOLD_ID);
+    const ref   = doc(db, 'households', HOUSEHOLD_ID);
     const unsub = onSnapshot(ref, (snap) => {
-      if (snap.exists()) setWalkHistory(snap.data().walkHistory ?? []);
+      if (snap.exists()) {
+        const d = snap.data();
+        setWalkHistory(d.walkHistory ?? []);
+        setDogName(d.dogName ?? '');
+        setLang((d.lang as Lang) || 'en');
+      }
       setLoading(false);
     });
     return unsub;
   }, []);
 
   if (loading) return (
-    <SafeAreaView style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-      <ActivityIndicator size="large" color="#3498db" />
+    <SafeAreaView style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FAF6F1' }}>
+      <ActivityIndicator size="large" color="#8B5E3C" />
     </SafeAreaView>
   );
 
-  const today = new Date().toDateString();
+  const isHe = lang === 'he';
+  const today      = new Date().toDateString();
   const todayWalks = walkHistory.filter(w => new Date(w.start).toDateString() === today);
   const todayTotal = todayWalks.reduce((sum, w) => sum + (w.duration ?? 0), 0);
-
-  const last7Days = walkHistory.filter(w => (Date.now() - w.start) < 7 * 24 * 60 * 60 * 1000);
-  const avgDuration = last7Days.length > 0
-    ? last7Days.reduce((sum, w) => sum + (w.duration ?? 0), 0) / last7Days.length
-    : 0;
-
-  const grouped = groupByDay(walkHistory);
-  const dayKeys = Object.keys(grouped).sort((a, b) => grouped[b][0].start - grouped[a][0].start);
-  const leaderboard = buildLeaderboard(last7Days);
-  const medals = ['🥇', '🥈', '🥉'];
+  const last7      = walkHistory.filter(w => (Date.now() - w.start) < 7 * 24 * 60 * 60 * 1000);
+  const avgDur     = last7.length > 0 ? last7.reduce((s, w) => s + (w.duration ?? 0), 0) / last7.length : 0;
+  const grouped    = groupByDay(walkHistory);
+  const dayKeys    = Object.keys(grouped).sort((a, b) => grouped[b][0].start - grouped[a][0].start);
+  const leaderboard = buildLeaderboard(last7);
+  const medals     = ['🥇', '🥈', '🥉'];
 
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.container}>
-        <Text style={styles.title}>📊 {DOG_NAME}'s Stats</Text>
+        <Text style={[styles.title, isHe && styles.rtl]}>
+          📊 {dogName ? `${dogName}` : ''} {t(lang, 'stats')}
+        </Text>
 
-        {/* Stats row */}
-        <View style={styles.statsRow}>
+        <View style={[styles.statsRow, isHe && styles.rowRev]}>
           <StatCard
-            label="Today's walks"
+            label={t(lang, 'todayWalks')}
             value={`${todayWalks.length}`}
-            sub={todayWalks.length > 0 ? formatDuration(todayTotal) + ' total' : 'None yet'}
-            color="#3498db"
+            sub={todayWalks.length > 0 ? formatDuration(todayTotal) : t(lang, 'none')}
+            color="#8B5E3C" rtl={isHe}
           />
           <StatCard
-            label="This week"
-            value={`${last7Days.length}`}
-            sub={last7Days.length > 0 ? 'avg ' + formatDuration(avgDuration) : 'No walks'}
-            color="#2ecc71"
+            label={t(lang, 'thisWeek')}
+            value={`${last7.length}`}
+            sub={last7.length > 0 ? `${t(lang, 'avg')} ${formatDuration(avgDur)}` : t(lang, 'none')}
+            color="#E8A838" rtl={isHe}
           />
         </View>
 
-        {/* Leaderboard */}
         {leaderboard.length > 0 && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>🏆 This Week's Walkers</Text>
+            <Text style={[styles.sectionTitle, isHe && styles.rtl]}>
+              🏆 {t(lang, 'thisWeekWalkers')}
+            </Text>
             {leaderboard.map((entry, i) => (
-              <View key={entry.name} style={styles.leaderRow}>
+              <View key={entry.name} style={[styles.leaderRow, isHe && styles.rowRev]}>
                 <Text style={styles.medal}>{medals[i] ?? '🐾'}</Text>
-                <Text style={styles.leaderName}>{entry.name}</Text>
-                <Text style={styles.leaderCount}>{entry.count} walk{entry.count !== 1 ? 's' : ''}</Text>
+                <Text style={[styles.leaderName, isHe && styles.rtl]}>{entry.name}</Text>
+                <Text style={styles.leaderCount}>{entry.count} {t(lang, 'walks')}</Text>
                 <Text style={styles.leaderDur}>{formatDuration(entry.duration)}</Text>
               </View>
             ))}
           </View>
         )}
 
-        {/* Walk log grouped by day */}
         {dayKeys.length > 0 ? (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>📅 Walk Log</Text>
+            <Text style={[styles.sectionTitle, isHe && styles.rtl]}>{t(lang, 'walkLog')}</Text>
             {dayKeys.map(key => {
               const dayWalks = grouped[key];
               const dayTotal = dayWalks.reduce((sum: number, w: any) => sum + (w.duration ?? 0), 0);
               return (
                 <View key={key} style={styles.dayGroup}>
-                  <View style={styles.dayHeader}>
-                    <Text style={styles.dayLabel}>{formatDate(dayWalks[0].start)}</Text>
-                    <Text style={styles.dayTotal}>{dayWalks.length} walks · {formatDuration(dayTotal)}</Text>
+                  <View style={[styles.dayHeader, isHe && styles.rowRev]}>
+                    <Text style={[styles.dayLabel, isHe && styles.rtl]}>{formatDate(dayWalks[0].start, lang)}</Text>
+                    <Text style={styles.dayTotal}>{dayWalks.length} {t(lang, 'walks')} · {formatDuration(dayTotal)}</Text>
                   </View>
                   {dayWalks.map((walk: any) => (
-                    <View key={walk.id} style={styles.walkRow}>
-                      <Text style={styles.walkEmoji}>{timeOfDayEmoji(walk.start)}</Text>
-                      <Text style={styles.walkTime}>{formatTime(walk.start)}</Text>
+                    <View key={walk.id} style={[styles.walkRow, isHe && styles.rowRev]}>
+                      <TimeOfDayIcon ts={walk.start} size={38} />
+                      <View style={[styles.walkInfo, isHe && { marginRight: 12, marginLeft: 0 }]}>
+                        <Text style={[styles.walkTime, isHe && styles.rtl]}>{formatTime(walk.start)}</Text>
+                        <Text style={[styles.walkWho, isHe && styles.rtl]}>{walk.takenBy}</Text>
+                      </View>
                       <Text style={styles.walkDur}>{formatDuration(walk.duration)}</Text>
-                      <Text style={styles.walkWho}>{walk.takenBy}</Text>
                     </View>
                   ))}
                 </View>
@@ -158,60 +165,44 @@ export default function HistoryScreen() {
         ) : (
           <View style={styles.emptyState}>
             <Text style={styles.emptyEmoji}>🐾</Text>
-            <Text style={styles.emptyText}>No walks logged yet</Text>
-            <Text style={styles.emptyHint}>Head to the home tab and log your first walk!</Text>
+            <Text style={[styles.emptyText, isHe && styles.rtl]}>{t(lang, 'noWalksYet')}</Text>
+            <Text style={[styles.emptyHint, isHe && styles.rtl]}>{t(lang, 'goLog')}</Text>
           </View>
         )}
-
       </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#f4f6f8' },
-  container: { padding: 24, paddingBottom: 60 },
-  title: { fontSize: 28, fontWeight: '800', color: '#2c3e50', marginBottom: 20 },
-  statsRow: { flexDirection: 'row', gap: 12, marginBottom: 20 },
-  statCard: {
-    flex: 1, backgroundColor: '#fff', borderRadius: 16, padding: 16, borderLeftWidth: 4,
-    shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 8, elevation: 3,
-  },
-  statValue: { fontSize: 32, fontWeight: '800', color: '#2c3e50' },
-  statLabel: { fontSize: 13, color: '#888', marginTop: 2 },
-  statSub: { fontSize: 12, color: '#aaa', marginTop: 4 },
-  section: { marginBottom: 24 },
-  sectionTitle: {
-    fontSize: 16, fontWeight: '700', color: '#888',
-    textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12,
-  },
-  leaderRow: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#fff', borderRadius: 14, padding: 14, marginBottom: 8,
-    shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 6, elevation: 2,
-  },
-  medal: { fontSize: 20, marginRight: 10 },
-  leaderName: { flex: 1, fontSize: 16, fontWeight: '600', color: '#2c3e50' },
-  leaderCount: { fontSize: 14, color: '#3498db', fontWeight: '600', marginRight: 10 },
-  leaderDur: { fontSize: 13, color: '#aaa' },
-  dayGroup: { marginBottom: 16 },
-  dayHeader: {
-    flexDirection: 'row', justifyContent: 'space-between',
-    alignItems: 'center', marginBottom: 8,
-  },
-  dayLabel: { fontSize: 15, fontWeight: '700', color: '#2c3e50' },
-  dayTotal: { fontSize: 13, color: '#888' },
-  walkRow: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#fff', borderRadius: 12, padding: 12, marginBottom: 6,
-    shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 4, elevation: 2,
-  },
-  walkEmoji: { fontSize: 18, marginRight: 8 },
-  walkTime: { fontSize: 14, color: '#2c3e50', fontWeight: '600', marginRight: 8 },
-  walkDur: { flex: 1, fontSize: 14, color: '#3498db', fontWeight: '600' },
-  walkWho: { fontSize: 14, color: '#888' },
-  emptyState: { alignItems: 'center', marginTop: 60 },
-  emptyEmoji: { fontSize: 60, marginBottom: 16 },
-  emptyText: { fontSize: 20, fontWeight: '700', color: '#2c3e50', marginBottom: 8 },
-  emptyHint: { fontSize: 14, color: '#aaa', textAlign: 'center' },
+  safe:         { flex: 1, backgroundColor: '#FAF6F1' },
+  container:    { padding: 24, paddingBottom: 60 },
+  title:        { fontSize: 28, fontWeight: '800', color: '#3d2b1f', marginBottom: 20 },
+  rtl:          { textAlign: 'right', writingDirection: 'rtl' },
+  rowRev:       { flexDirection: 'row-reverse' },
+  statsRow:     { flexDirection: 'row', gap: 12, marginBottom: 20 },
+  statCard:     { flex: 1, backgroundColor: '#fff', borderRadius: 16, padding: 16, borderLeftWidth: 4, borderRightWidth: 4, borderRightColor: 'transparent', shadowColor: '#8B5E3C', shadowOpacity: 0.07, shadowRadius: 8, elevation: 3 },
+  statValue:    { fontSize: 32, fontWeight: '800', color: '#3d2b1f' },
+  statLabel:    { fontSize: 13, color: '#B8956A', marginTop: 2 },
+  statSub:      { fontSize: 12, color: '#C4A882', marginTop: 4 },
+  section:      { marginBottom: 24 },
+  sectionTitle: { fontSize: 13, fontWeight: '700', color: '#B8956A', textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 12 },
+  leaderRow:    { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 14, padding: 14, marginBottom: 8, borderWidth: 1, borderColor: '#EDE0D4' },
+  medal:        { fontSize: 20, marginRight: 10 },
+  leaderName:   { flex: 1, fontSize: 16, fontWeight: '600', color: '#3d2b1f' },
+  leaderCount:  { fontSize: 14, color: '#8B5E3C', fontWeight: '600', marginRight: 10 },
+  leaderDur:    { fontSize: 13, color: '#C4A882' },
+  dayGroup:     { marginBottom: 16 },
+  dayHeader:    { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  dayLabel:     { fontSize: 15, fontWeight: '700', color: '#3d2b1f' },
+  dayTotal:     { fontSize: 13, color: '#B8956A' },
+  walkRow:      { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 14, padding: 12, marginBottom: 6, borderWidth: 1, borderColor: '#EDE0D4' },
+  walkInfo:     { flex: 1, marginLeft: 12 },
+  walkTime:     { fontSize: 15, color: '#3d2b1f', fontWeight: '700' },
+  walkWho:      { fontSize: 12, color: '#B8956A', marginTop: 2 },
+  walkDur:      { fontSize: 15, color: '#8B5E3C', fontWeight: '700' },
+  emptyState:   { alignItems: 'center', marginTop: 60 },
+  emptyEmoji:   { fontSize: 60, marginBottom: 16 },
+  emptyText:    { fontSize: 20, fontWeight: '700', color: '#3d2b1f', marginBottom: 8 },
+  emptyHint:    { fontSize: 14, color: '#C4A882', textAlign: 'center' },
 });
